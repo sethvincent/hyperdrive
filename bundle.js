@@ -215,7 +215,7 @@ drop(window, function (files) {
 })
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":4,"choppa":226,"csv-parser":238,"drag-and-drop-files":243,"filereader-stream":244,"hyperdrive":260,"level-browserify":429,"memdb":474,"mimes":513,"pretty-bytes":514,"pump":581,"signalhub":516,"speedometer":544,"videostream":554,"webrtc-swarm":555}],2:[function(require,module,exports){
+},{"buffer":4,"choppa":226,"csv-parser":238,"drag-and-drop-files":243,"filereader-stream":244,"hyperdrive":260,"level-browserify":429,"memdb":474,"mimes":513,"pretty-bytes":514,"pump":516,"signalhub":520,"speedometer":548,"videostream":558,"webrtc-swarm":559}],2:[function(require,module,exports){
 
 },{}],3:[function(require,module,exports){
 arguments[4][2][0].apply(exports,arguments)
@@ -34582,12 +34582,18 @@ function Iterator (db, options) {
   this._done  = false
   var lower = ltgt.lowerBound(options)
   var upper = ltgt.upperBound(options)
-  this._keyRange = lower || upper ? this.db.makeKeyRange({
-    lower: lower,
-    upper: upper,
-    excludeLower: ltgt.lowerBoundExclusive(options),
-    excludeUpper: ltgt.upperBoundExclusive(options)
-  }) : null
+  try {
+    this._keyRange = lower || upper ? this.db.makeKeyRange({
+      lower: lower,
+      upper: upper,
+      excludeLower: ltgt.lowerBoundExclusive(options),
+      excludeUpper: ltgt.upperBoundExclusive(options)
+    }) : null
+  } catch (e) {
+    // The lower key is greater than the upper key.
+    // IndexedDB throws an error, but we'll just return 0 results.
+    this._keyRangeError = true
+  }
   this.callback = null
 }
 
@@ -34625,6 +34631,7 @@ Iterator.prototype.onItem = function (value, cursor, cursorTransaction) {
 
 Iterator.prototype._next = function (callback) {
   if (!callback) return new Error('next() requires a callback argument')
+  if (this._keyRangeError) return callback()
   if (!this._started) {
     this.createIterator()
     this._started = true
@@ -35002,7 +35009,8 @@ function extend() {
 
 /**
  * @license IDBWrapper - A cross-browser wrapper for IndexedDB
- * Copyright (c) 2011 - 2013 Jens Arps
+ * Version 1.6.1
+ * Copyright (c) 2011 - 2015 Jens Arps
  * http://jensarps.de/
  *
  * Licensed under the MIT (X11) license
@@ -35023,6 +35031,7 @@ function extend() {
   var defaultErrorHandler = function (error) {
     throw error;
   };
+  var defaultSuccessHandler = function () {};
 
   var defaults = {
     storeName: 'Store',
@@ -35033,7 +35042,13 @@ function extend() {
     onStoreReady: function () {
     },
     onError: defaultErrorHandler,
-    indexes: []
+    indexes: [],
+    implementationPreference: [
+      'indexedDB',
+      'webkitIndexedDB',
+      'mozIndexedDB',
+      'shimIndexedDB'
+    ]
   };
 
   /**
@@ -35042,7 +35057,7 @@ function extend() {
    *
    * @constructor
    * @name IDBStore
-   * @version 1.4.1
+   * @version 1.6.1
    *
    * @param {Object} [kwArgs] An options object used to configure the store and
    *  set callbacks
@@ -35071,6 +35086,7 @@ function extend() {
    * @param {String} [kwArgs.indexes.indexData.keyPath] The key path of the index
    * @param {Boolean} [kwArgs.indexes.indexData.unique] Whether the index is unique
    * @param {Boolean} [kwArgs.indexes.indexData.multiEntry] Whether the index is multi entry
+   * @param {Array} [kwArgs.implementationPreference=['indexedDB','webkitIndexedDB','mozIndexedDB','shimIndexedDB']] An array of strings naming implementations to be used, in order or preference
    * @param {Function} [onStoreReady] A callback to be called when the store
    * is ready to be used.
    * @example
@@ -35114,12 +35130,12 @@ function extend() {
     onStoreReady && (this.onStoreReady = onStoreReady);
 
     var env = typeof window == 'object' ? window : self;
-    this.idb = env.indexedDB || env.webkitIndexedDB || env.mozIndexedDB;
+    var availableImplementations = this.implementationPreference.filter(function (implName) {
+      return implName in env;
+    });
+    this.implementation = availableImplementations[0];
+    this.idb = env[this.implementation];
     this.keyRange = env.IDBKeyRange || env.webkitIDBKeyRange || env.mozIDBKeyRange;
-
-    this.features = {
-      hasAutoIncrement: !env.mozIndexedDB
-    };
 
     this.consts = {
       'READ_ONLY':         'readonly',
@@ -35139,21 +35155,22 @@ function extend() {
     /**
      * A pointer to the IDBStore ctor
      *
-     * @type IDBStore
+     * @private
+     * @type {Function}
      */
     constructor: IDBStore,
 
     /**
      * The version of IDBStore
      *
-     * @type String
+     * @type {String}
      */
-    version: '1.4.1',
+    version: '1.6.1',
 
     /**
      * A reference to the IndexedDB object
      *
-     * @type Object
+     * @type {Object}
      */
     db: null,
 
@@ -35161,65 +35178,77 @@ function extend() {
      * The full name of the IndexedDB used by IDBStore, composed of
      * this.storePrefix + this.storeName
      *
-     * @type String
+     * @type {String}
      */
     dbName: null,
 
     /**
      * The version of the IndexedDB used by IDBStore
      *
-     * @type Number
+     * @type {Number}
      */
     dbVersion: null,
 
     /**
      * A reference to the objectStore used by IDBStore
      *
-     * @type Object
+     * @type {Object}
      */
     store: null,
 
     /**
      * The store name
      *
-     * @type String
+     * @type {String}
      */
     storeName: null,
 
     /**
+     * The prefix to prepend to the store name
+     *
+     * @type {String}
+     */
+    storePrefix: null,
+
+    /**
      * The key path
      *
-     * @type String
+     * @type {String}
      */
     keyPath: null,
 
     /**
      * Whether IDBStore uses autoIncrement
      *
-     * @type Boolean
+     * @type {Boolean}
      */
     autoIncrement: null,
 
     /**
      * The indexes used by IDBStore
      *
-     * @type Array
+     * @type {Array}
      */
     indexes: null,
 
     /**
-     * A hashmap of features of the used IDB implementation
+     * The implemantations to try to use, in order of preference
      *
-     * @type Object
-     * @proprty {Boolean} autoIncrement If the implementation supports
-     *  native auto increment
+     * @type {Array}
      */
-    features: null,
+    implementationPreference: null,
+
+    /**
+     * The actual implementation being used
+     *
+     * @type {String}
+     */
+    implementation: '',
 
     /**
      * The callback to be called when the store is ready to be used
      *
-     * @type Function
+     * @type {Function}
      */
     onStoreReady: null,
 
@@ -35227,14 +35256,14 @@ function extend() {
      * The callback to be called if an error occurred during instantiation
      * of the store
      *
-     * @type Function
+     * @type {Function}
      */
     onError: null,
 
     /**
      * The internal insertID counter
      *
-     * @type Number
+     * @type {Number}
      * @private
      */
     _insertIdCount: 0,
@@ -35293,7 +35322,7 @@ function extend() {
         if(!this.db.objectStoreNames.contains(this.storeName)){
           // We should never ever get here.
           // Lets notify the user anyway.
-          this.onError(new Error('Something is wrong with the IndexedDB implementation in this browser. Please upgrade your browser.'));
+          this.onError(new Error('Object store couldn\'t be created.'));
           return;
         }
 
@@ -35392,10 +35421,20 @@ function extend() {
     /**
      * Deletes the database used for this store if the IDB implementations
      * provides that functionality.
+     *
+     * @param {Function} [onSuccess] A callback that is called if deletion
+     *  was successful.
+     * @param {Function} [onError] A callback that is called if deletion
+     *  failed.
      */
-    deleteDatabase: function () {
+    deleteDatabase: function (onSuccess, onError) {
       if (this.idb.deleteDatabase) {
-        this.idb.deleteDatabase(this.dbName);
+        this.db.close();
+        var deleteRequest = this.idb.deleteDatabase(this.dbName);
+        deleteRequest.onsuccess = onSuccess;
+        deleteRequest.onerror = onError;
+      } else {
+        onError(new Error('Browser does not support IndexedDB deleteDatabase!'));
       }
     },
 
@@ -35442,7 +35481,7 @@ function extend() {
         value = key;
       }
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       var hasSuccess = false,
           result = null,
@@ -35484,7 +35523,7 @@ function extend() {
      */
     get: function (key, onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       var hasSuccess = false,
           result = null;
@@ -35518,7 +35557,7 @@ function extend() {
      */
     remove: function (key, onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       var hasSuccess = false,
           result = null;
@@ -35554,10 +35593,12 @@ function extend() {
      */
     batch: function (dataArray, onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       if(Object.prototype.toString.call(dataArray) != '[object Array]'){
         onError(new Error('dataArray argument must be of type Array.'));
+      } else if (dataArray.length === 0) {
+        return onSuccess(true);
       }
       var batchTransaction = this.db.transaction([this.storeName] , this.consts.READ_WRITE);
       batchTransaction.oncomplete = function () {
@@ -35628,6 +35669,93 @@ function extend() {
       });
 
       return this.batch(batchData, onSuccess, onError);
+    },
+
+    /**
+     * Like putBatch, takes an array of objects and stores them in a single
+     * transaction, but allows processing of the result values.  Returns the
+     * processed records containing the key for newly created records to the
+     * onSuccess calllback instead of only returning true or false for success.
+     * In addition, added the option for the caller to specify a key field that
+     * should be set to the newly created key.
+     *
+     * @param {Array} dataArray An array of objects to store
+     * @param {Object} [options] An object containing optional options
+     * @param {String} [options.keyField=this.keyPath] Specifies a field in the record to update
+     *  with the auto-incrementing key. Defaults to the store's keyPath.
+     * @param {Function} [onSuccess] A callback that is called if all operations
+     *  were successful.
+     * @param {Function} [onError] A callback that is called if an error
+     *  occurred during one of the operations.
+     * @returns {IDBTransaction} The transaction used for this operation.
+     *
+     */
+    upsertBatch: function (dataArray, options, onSuccess, onError) {
+      // handle `dataArray, onSuccess, onError` signature
+      if (typeof options == 'function') {
+        onSuccess = options;
+        onError = onSuccess;
+        options = {};
+      }
+
+      onError || (onError = defaultErrorHandler);
+      onSuccess || (onSuccess = defaultSuccessHandler);
+      options || (options = {});
+
+      if (Object.prototype.toString.call(dataArray) != '[object Array]') {
+        onError(new Error('dataArray argument must be of type Array.'));
+      }
+      var batchTransaction = this.db.transaction([this.storeName], this.consts.READ_WRITE);
+      batchTransaction.oncomplete = function () {
+        if (hasSuccess) {
+          onSuccess(dataArray);
+        } else {
+          onError(false);
+        }
+      };
+      batchTransaction.onabort = onError;
+      batchTransaction.onerror = onError;
+
+      var keyField = options.keyField || this.keyPath;
+      var count = dataArray.length;
+      var called = false;
+      var hasSuccess = false;
+      var index = 0; // assume success callbacks are executed in order
+
+      var onItemSuccess = function (event) {
+        var record = dataArray[index++];
+        record[keyField] = event.target.result;
+
+        count--;
+        if (count === 0 && !called) {
+          called = true;
+          hasSuccess = true;
+        }
+      };
+
+      dataArray.forEach(function (record) {
+        var key = record.key;
+
+        var onItemError = function (err) {
+          batchTransaction.abort();
+          if (!called) {
+            called = true;
+            onError(err);
+          }
+        };
+
+        var putRequest;
+        if (this.keyPath !== null) { // in-line keys
+          this._addIdPropertyIfNeeded(record);
+          putRequest = batchTransaction.objectStore(this.storeName).put(record);
+        } else { // out-of-line keys
+          putRequest = batchTransaction.objectStore(this.storeName).put(record, key);
+        }
+        putRequest.onsuccess = onItemSuccess;
+        putRequest.onerror = onItemError;
+      }, this);
+
+      return batchTransaction;
     },
 
     /**
@@ -35708,11 +35836,13 @@ function extend() {
      */
     getBatch: function (keyArray, onSuccess, onError, arrayType) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
       arrayType || (arrayType = 'sparse');
 
-      if(Object.prototype.toString.call(keyArray) != '[object Array]'){
+      if (Object.prototype.toString.call(keyArray) != '[object Array]'){
         onError(new Error('keyArray argument must be of type Array.'));
+      } else if (keyArray.length === 0) {
+        return onSuccess([]);
       }
       var batchTransaction = this.db.transaction([this.storeName] , this.consts.READ_ONLY);
       batchTransaction.oncomplete = function () {
@@ -35771,7 +35901,7 @@ function extend() {
      */
     getAll: function (onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
       var getAllTransaction = this.db.transaction([this.storeName], this.consts.READ_ONLY);
       var store = getAllTransaction.objectStore(this.storeName);
       if (store.getAll) {
@@ -35864,7 +35994,7 @@ function extend() {
      */
     clear: function (onSuccess, onError) {
       onError || (onError = defaultErrorHandler);
-      onSuccess || (onSuccess = noop);
+      onSuccess || (onSuccess = defaultSuccessHandler);
 
       var hasSuccess = false,
           result = null;
@@ -35895,7 +36025,7 @@ function extend() {
      * @private
      */
     _addIdPropertyIfNeeded: function (dataObj) {
-      if (!this.features.hasAutoIncrement && typeof dataObj[this.keyPath] == 'undefined') {
+      if (typeof dataObj[this.keyPath] == 'undefined') {
         dataObj[this.keyPath] = this._insertIdCount++ + Date.now();
       }
     },
@@ -36010,6 +36140,10 @@ function extend() {
      *  iteration has ended
      * @param {Function} [options.onError=throw] A callback to be called
      *  if an error occurred during the operation.
+     * @param {Number} [options.limit=Infinity] Limit the number of returned
+     *  results to this number
+     * @param {Number} [options.offset=0] Skip the provided number of results
+     *  in the resultset
      * @returns {IDBTransaction} The transaction used for this operation.
      */
     iterate: function (onItem, options) {
@@ -36021,7 +36155,9 @@ function extend() {
         keyRange: null,
         writeAccess: false,
         onEnd: null,
-        onError: defaultErrorHandler
+        onError: defaultErrorHandler,
+        limit: Infinity,
+        offset: 0
       }, options || {});
 
       var directionType = options.order.toLowerCase() == 'desc' ? 'PREV' : 'NEXT';
@@ -36035,6 +36171,7 @@ function extend() {
       if (options.index) {
         cursorTarget = cursorTarget.index(options.index);
       }
+      var recordCount = 0;
 
       cursorTransaction.oncomplete = function () {
         if (!hasSuccess) {
@@ -36055,9 +36192,19 @@ function extend() {
       cursorRequest.onsuccess = function (event) {
         var cursor = event.target.result;
         if (cursor) {
-          onItem(cursor.value, cursor, cursorTransaction);
-          if (options.autoContinue) {
-            cursor['continue']();
+          if (options.offset) {
+            cursor.advance(options.offset);
+            options.offset = 0;
+          } else {
+            onItem(cursor.value, cursor, cursorTransaction);
+            recordCount++;
+            if (options.autoContinue) {
+              if (recordCount + options.offset < options.limit) {
+                cursor['continue']();
+              } else {
+                hasSuccess = true;
+              }
+            }
           }
         } else {
           hasSuccess = true;
@@ -36073,20 +36220,26 @@ function extend() {
      *
      * @param {Function} onSuccess A callback to be called when the operation
      *  was successful.
-     * @param {Object} [options] An object defining specific query options
+     * @param {Object} [options] An object defining specific options
      * @param {Object} [options.index=null] An IDBIndex to operate on
      * @param {String} [options.order=ASC] The order in which to provide the
      *  results, can be 'DESC' or 'ASC'
      * @param {Boolean} [options.filterDuplicates=false] Whether to exclude
      *  duplicate matches
      * @param {Object} [options.keyRange=null] An IDBKeyRange to use
-     * @param {Function} [options.onError=throw] A callback to be called if an error
-     *  occurred during the operation.
+     * @param {Function} [options.onError=throw] A callback to be called
+     *  if an error occurred during the operation.
+     * @param {Number} [options.limit=Infinity] Limit the number of returned
+     *  results to this number
+     * @param {Number} [options.offset=0] Skip the provided number of results
+     *  in the resultset
      * @returns {IDBTransaction} The transaction used for this operation.
      */
     query: function (onSuccess, options) {
       var result = [];
       options = options || {};
+      options.autoContinue = true;
+      options.writeAccess = false;
       options.onEnd = function () {
         onSuccess(result);
       };
@@ -36196,9 +36349,6 @@ function extend() {
   };
 
   /** helpers **/
-
-  var noop = function () {
-  };
   var empty = {};
   var mixin = function (target, source) {
     var name, s;
@@ -36278,14 +36428,6 @@ var lowerBoundKey = exports.lowerBoundKey = function (range) {
 var lowerBound = exports.lowerBound = function (range) {
   var k = lowerBoundKey(range)
   return k && range[k]
-  return (
-      has(range, 'gt')                      ? range.gt
-    : has(range, 'gte')                     ? range.gte
-    : has(range, 'min')                     ? range.min
-    : has(range, 'start') && !range.reverse ? range.start
-    : has(range, 'end')   && range.reverse  ? range.end
-    :                                         undefined
-  )
 }
 
 exports.lowerBoundInclusive = function (range) {
@@ -36331,20 +36473,29 @@ exports.toLtgt = function (range, _range, map, lower, upper) {
   var lb = exports.lowerBoundKey(range)
   var ub = exports.upperBoundKey(range)
   if(lb) {
-    if(lb === 'gt') _range.gt = map(range.gt)
-    else            _range.gte = map(range[lb])
+    if(lb === 'gt') _range.gt = map(range.gt, false)
+    else            _range.gte = map(range[lb], false)
   }
   else if(defaults)
-    _range.gte = lower
+    _range.gte = map(lower, false)
 
   if(ub) {
-    if(ub === 'lt') _range.lt = map(range.lt)
-    else            _range.lte = map(range[ub])
+    if(ub === 'lt') _range.lt = map(range.lt, true)
+    else            _range.lte = map(range[ub], true)
   }
   else if(defaults)
-    _range.lte = upper
+    _range.lte = map(upper, true)
 
-  _range.reverse = !!range.reverse
+  if(range.reverse != null)
+    _range.reverse = !!range.reverse
+
+  //if range was used mutably
+  //(in level-sublevel it's part of an options object
+  //that has more properties on it.)
+  if(has(_range, 'max'))   delete _range.max
+  if(has(_range, 'min'))   delete _range.min
+  if(has(_range, 'start')) delete _range.start
+  if(has(_range, 'end'))   delete _range.end
 
   return _range
 }
@@ -40986,6 +41137,14 @@ module.exports = Number.isNaN || function (x) {
 };
 
 },{}],516:[function(require,module,exports){
+arguments[4][357][0].apply(exports,arguments)
+},{"dup":357,"end-of-stream":517,"fs":2,"once":519}],517:[function(require,module,exports){
+arguments[4][358][0].apply(exports,arguments)
+},{"dup":358,"once":519}],518:[function(require,module,exports){
+arguments[4][287][0].apply(exports,arguments)
+},{"dup":287}],519:[function(require,module,exports){
+arguments[4][288][0].apply(exports,arguments)
+},{"dup":288,"wrappy":518}],520:[function(require,module,exports){
 var ess = require('event-source-stream')
 var nets = require('nets')
 var pump = require('pump')
@@ -41064,13 +41223,13 @@ module.exports = function (app, urls) {
   return that
 }
 
-},{"event-source-stream":520,"nets":521,"pump":530,"through2":543}],517:[function(require,module,exports){
+},{"event-source-stream":524,"nets":525,"pump":534,"through2":547}],521:[function(require,module,exports){
 arguments[4][358][0].apply(exports,arguments)
-},{"dup":358,"once":519}],518:[function(require,module,exports){
+},{"dup":358,"once":523}],522:[function(require,module,exports){
 arguments[4][287][0].apply(exports,arguments)
-},{"dup":287}],519:[function(require,module,exports){
+},{"dup":287}],523:[function(require,module,exports){
 arguments[4][288][0].apply(exports,arguments)
-},{"dup":288,"wrappy":518}],520:[function(require,module,exports){
+},{"dup":288,"wrappy":522}],524:[function(require,module,exports){
 var stream = require('stream')
 
 module.exports = function(url, opts) {
@@ -41113,7 +41272,7 @@ module.exports = function(url, opts) {
 
   return rs
 }
-},{"stream":220}],521:[function(require,module,exports){
+},{"stream":220}],525:[function(require,module,exports){
 (function (process,Buffer){
 var req = require('request')
 
@@ -41141,7 +41300,7 @@ function Nets (opts, cb) {
 }
 
 }).call(this,require('_process'),require("buffer").Buffer)
-},{"_process":206,"buffer":4,"request":522}],522:[function(require,module,exports){
+},{"_process":206,"buffer":4,"request":526}],526:[function(require,module,exports){
 "use strict";
 var window = require("global/window")
 var once = require("once")
@@ -41362,7 +41521,7 @@ function _createXHR(options) {
 
 function noop() {}
 
-},{"global/window":523,"is-function":524,"once":525,"parse-headers":528,"xtend":529}],523:[function(require,module,exports){
+},{"global/window":527,"is-function":528,"once":529,"parse-headers":532,"xtend":533}],527:[function(require,module,exports){
 (function (global){
 if (typeof window !== "undefined") {
     module.exports = window;
@@ -41375,7 +41534,7 @@ if (typeof window !== "undefined") {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],524:[function(require,module,exports){
+},{}],528:[function(require,module,exports){
 module.exports = isFunction
 
 var toString = Object.prototype.toString
@@ -41392,7 +41551,7 @@ function isFunction (fn) {
       fn === window.prompt))
 };
 
-},{}],525:[function(require,module,exports){
+},{}],529:[function(require,module,exports){
 module.exports = once
 
 once.proto = once(function () {
@@ -41413,7 +41572,7 @@ function once (fn) {
   }
 }
 
-},{}],526:[function(require,module,exports){
+},{}],530:[function(require,module,exports){
 var isFunction = require('is-function')
 
 module.exports = forEach
@@ -41461,7 +41620,7 @@ function forEachObject(object, iterator, context) {
     }
 }
 
-},{"is-function":524}],527:[function(require,module,exports){
+},{"is-function":528}],531:[function(require,module,exports){
 
 exports = module.exports = trim;
 
@@ -41477,7 +41636,7 @@ exports.right = function(str){
   return str.replace(/\s*$/, '');
 };
 
-},{}],528:[function(require,module,exports){
+},{}],532:[function(require,module,exports){
 var trim = require('trim')
   , forEach = require('for-each')
   , isArray = function(arg) {
@@ -41509,37 +41668,37 @@ module.exports = function (headers) {
 
   return result
 }
-},{"for-each":526,"trim":527}],529:[function(require,module,exports){
+},{"for-each":530,"trim":531}],533:[function(require,module,exports){
 arguments[4][236][0].apply(exports,arguments)
-},{"dup":236}],530:[function(require,module,exports){
+},{"dup":236}],534:[function(require,module,exports){
 arguments[4][357][0].apply(exports,arguments)
-},{"dup":357,"end-of-stream":517,"fs":2,"once":532}],531:[function(require,module,exports){
+},{"dup":357,"end-of-stream":521,"fs":2,"once":536}],535:[function(require,module,exports){
 arguments[4][287][0].apply(exports,arguments)
-},{"dup":287}],532:[function(require,module,exports){
+},{"dup":287}],536:[function(require,module,exports){
 arguments[4][288][0].apply(exports,arguments)
-},{"dup":288,"wrappy":531}],533:[function(require,module,exports){
+},{"dup":288,"wrappy":535}],537:[function(require,module,exports){
 arguments[4][227][0].apply(exports,arguments)
-},{"./_stream_readable":534,"./_stream_writable":536,"_process":206,"core-util-is":537,"dup":227,"inherits":538}],534:[function(require,module,exports){
+},{"./_stream_readable":538,"./_stream_writable":540,"_process":206,"core-util-is":541,"dup":227,"inherits":542}],538:[function(require,module,exports){
 arguments[4][228][0].apply(exports,arguments)
-},{"_process":206,"buffer":4,"core-util-is":537,"dup":228,"events":201,"inherits":538,"isarray":539,"stream":220,"string_decoder/":540}],535:[function(require,module,exports){
+},{"_process":206,"buffer":4,"core-util-is":541,"dup":228,"events":201,"inherits":542,"isarray":543,"stream":220,"string_decoder/":544}],539:[function(require,module,exports){
 arguments[4][229][0].apply(exports,arguments)
-},{"./_stream_duplex":533,"core-util-is":537,"dup":229,"inherits":538}],536:[function(require,module,exports){
+},{"./_stream_duplex":537,"core-util-is":541,"dup":229,"inherits":542}],540:[function(require,module,exports){
 arguments[4][230][0].apply(exports,arguments)
-},{"./_stream_duplex":533,"_process":206,"buffer":4,"core-util-is":537,"dup":230,"inherits":538,"stream":220}],537:[function(require,module,exports){
+},{"./_stream_duplex":537,"_process":206,"buffer":4,"core-util-is":541,"dup":230,"inherits":542,"stream":220}],541:[function(require,module,exports){
 arguments[4][231][0].apply(exports,arguments)
-},{"../../../../../../../../browserify/node_modules/insert-module-globals/node_modules/is-buffer/index.js":203,"dup":231}],538:[function(require,module,exports){
+},{"../../../../../../../../browserify/node_modules/insert-module-globals/node_modules/is-buffer/index.js":203,"dup":231}],542:[function(require,module,exports){
 arguments[4][202][0].apply(exports,arguments)
-},{"dup":202}],539:[function(require,module,exports){
+},{"dup":202}],543:[function(require,module,exports){
 arguments[4][204][0].apply(exports,arguments)
-},{"dup":204}],540:[function(require,module,exports){
+},{"dup":204}],544:[function(require,module,exports){
 arguments[4][221][0].apply(exports,arguments)
-},{"buffer":4,"dup":221}],541:[function(require,module,exports){
+},{"buffer":4,"dup":221}],545:[function(require,module,exports){
 arguments[4][218][0].apply(exports,arguments)
-},{"./lib/_stream_transform.js":535,"dup":218}],542:[function(require,module,exports){
+},{"./lib/_stream_transform.js":539,"dup":218}],546:[function(require,module,exports){
 arguments[4][236][0].apply(exports,arguments)
-},{"dup":236}],543:[function(require,module,exports){
+},{"dup":236}],547:[function(require,module,exports){
 arguments[4][237][0].apply(exports,arguments)
-},{"_process":206,"dup":237,"readable-stream/transform":541,"util":223,"xtend":542}],544:[function(require,module,exports){
+},{"_process":206,"dup":237,"readable-stream/transform":545,"util":223,"xtend":546}],548:[function(require,module,exports){
 var tick = 1
 var maxTick = 65535
 var resolution = 4
@@ -41576,13 +41735,13 @@ module.exports = function (seconds) {
   }
 }
 
-},{}],545:[function(require,module,exports){
+},{}],549:[function(require,module,exports){
 arguments[4][282][0].apply(exports,arguments)
-},{"./debug":546,"dup":282}],546:[function(require,module,exports){
+},{"./debug":550,"dup":282}],550:[function(require,module,exports){
 arguments[4][283][0].apply(exports,arguments)
-},{"dup":283,"ms":547}],547:[function(require,module,exports){
+},{"dup":283,"ms":551}],551:[function(require,module,exports){
 arguments[4][284][0].apply(exports,arguments)
-},{"dup":284}],548:[function(require,module,exports){
+},{"dup":284}],552:[function(require,module,exports){
 /**
   DataStream reads scalars, arrays and structs of data from an ArrayBuffer.
   It's like a file-like DataView on steroids.
@@ -43118,7 +43277,7 @@ DataStream.prototype.adjustUint32 = function(position, value) {
 	this.writeUint32(value);
 	this.seek(pos);
 }
-},{}],549:[function(require,module,exports){
+},{}],553:[function(require,module,exports){
 /* 
  * Copyright (c) 2012-2013. Telecom ParisTech/TSI/MM/GPAC Cyril Concolato
  * License: BSD-3-Clause (see LICENSE file)
@@ -44679,7 +44838,7 @@ BoxParser.tfdtBox.prototype.write = function(stream) {
 	}
 }
 
-},{"./DataStream":548,"./descriptor":550,"./log":552}],550:[function(require,module,exports){
+},{"./DataStream":552,"./descriptor":554,"./log":556}],554:[function(require,module,exports){
 /* 
  * Copyright (c) 2012-2013. Telecom ParisTech/TSI/MM/GPAC Cyril Concolato
  * License: BSD-3-Clause (see LICENSE file)
@@ -44834,7 +44993,7 @@ var MPEG4DescriptorParser = function () {
 }
 module.exports = MPEG4DescriptorParser;
 
-},{"./log":552}],551:[function(require,module,exports){
+},{"./log":556}],555:[function(require,module,exports){
 /* 
  * Copyright (c) 2012-2013. Telecom ParisTech/TSI/MM/GPAC Cyril Concolato
  * License: BSD-3-Clause (see LICENSE file)
@@ -45593,7 +45752,7 @@ ISOFile.prototype.releaseSample = function(trak, sampleNum) {
 	return sample.size;
 }
 
-},{"./DataStream":548,"./box":549,"./log":552}],552:[function(require,module,exports){
+},{"./DataStream":552,"./box":553,"./log":556}],556:[function(require,module,exports){
 /* 
  * Copyright (c) 2012-2013. Telecom ParisTech/TSI/MM/GPAC Cyril Concolato
  * License: BSD-3-Clause (see LICENSE file)
@@ -45680,7 +45839,7 @@ Log.printRanges = function(ranges) {
 }
 
 
-},{}],553:[function(require,module,exports){
+},{}],557:[function(require,module,exports){
 /* 
  * Copyright (c) 2012-2013. Telecom ParisTech/TSI/MM/GPAC Cyril Concolato
  * License: BSD-3-Clause (see LICENSE file)
@@ -46357,7 +46516,7 @@ MP4Box.prototype.seek = function(time, useRap) {
 	}
 }
 
-},{"./DataStream":548,"./box":549,"./isofile":551,"./log":552}],554:[function(require,module,exports){
+},{"./DataStream":552,"./box":553,"./isofile":555,"./log":556}],558:[function(require,module,exports){
 var debug = require('debug')('videostream');
 var MP4Box = require('mp4box');
 
@@ -46678,7 +46837,7 @@ function save (filename, buffers) {
 	a.click();
  }
 
-},{"debug":545,"mp4box":553}],555:[function(require,module,exports){
+},{"debug":549,"mp4box":557}],559:[function(require,module,exports){
 var SimplePeer = require('simple-peer')
 var events = require('events')
 var through = require('through2')
@@ -46797,7 +46956,7 @@ module.exports = function (hub, opts) {
   return swarm
 }
 
-},{"cuid":556,"debug":557,"events":201,"once":561,"simple-peer":562,"through2":580}],556:[function(require,module,exports){
+},{"cuid":560,"debug":561,"events":201,"once":565,"simple-peer":566,"through2":584}],560:[function(require,module,exports){
 /**
  * cuid.js
  * Collision-resistant UID generator for browsers and node.
@@ -46909,17 +47068,17 @@ module.exports = function (hub, opts) {
 
 }(this.applitude || this));
 
-},{}],557:[function(require,module,exports){
+},{}],561:[function(require,module,exports){
 arguments[4][282][0].apply(exports,arguments)
-},{"./debug":558,"dup":282}],558:[function(require,module,exports){
+},{"./debug":562,"dup":282}],562:[function(require,module,exports){
 arguments[4][283][0].apply(exports,arguments)
-},{"dup":283,"ms":559}],559:[function(require,module,exports){
+},{"dup":283,"ms":563}],563:[function(require,module,exports){
 arguments[4][284][0].apply(exports,arguments)
-},{"dup":284}],560:[function(require,module,exports){
+},{"dup":284}],564:[function(require,module,exports){
 arguments[4][287][0].apply(exports,arguments)
-},{"dup":287}],561:[function(require,module,exports){
+},{"dup":287}],565:[function(require,module,exports){
 arguments[4][288][0].apply(exports,arguments)
-},{"dup":288,"wrappy":560}],562:[function(require,module,exports){
+},{"dup":288,"wrappy":564}],566:[function(require,module,exports){
 (function (Buffer){
 /* global Blob */
 
@@ -47450,7 +47609,7 @@ Peer.prototype._debug = function () {
 function noop () {}
 
 }).call(this,{"isBuffer":require("../../../browserify/node_modules/insert-module-globals/node_modules/is-buffer/index.js")})
-},{"../../../browserify/node_modules/insert-module-globals/node_modules/is-buffer/index.js":203,"debug":557,"get-browser-rtc":563,"hat":564,"inherits":565,"is-typedarray":566,"once":561,"stream":220,"typedarray-to-buffer":567}],563:[function(require,module,exports){
+},{"../../../browserify/node_modules/insert-module-globals/node_modules/is-buffer/index.js":203,"debug":561,"get-browser-rtc":567,"hat":568,"inherits":569,"is-typedarray":570,"once":565,"stream":220,"typedarray-to-buffer":571}],567:[function(require,module,exports){
 // originally pulled out of simple-peer
 
 module.exports = function getBrowserRTC () {
@@ -47467,7 +47626,7 @@ module.exports = function getBrowserRTC () {
   return wrtc
 }
 
-},{}],564:[function(require,module,exports){
+},{}],568:[function(require,module,exports){
 var hat = module.exports = function (bits, base) {
     if (!base) base = 16;
     if (bits === undefined) bits = 128;
@@ -47531,44 +47690,36 @@ hat.rack = function (bits, base, expandBy) {
     return fn;
 };
 
-},{}],565:[function(require,module,exports){
+},{}],569:[function(require,module,exports){
 arguments[4][202][0].apply(exports,arguments)
-},{"dup":202}],566:[function(require,module,exports){
+},{"dup":202}],570:[function(require,module,exports){
 arguments[4][259][0].apply(exports,arguments)
-},{"dup":259}],567:[function(require,module,exports){
+},{"dup":259}],571:[function(require,module,exports){
 arguments[4][258][0].apply(exports,arguments)
-},{"buffer":4,"dup":258,"is-typedarray":566}],568:[function(require,module,exports){
+},{"buffer":4,"dup":258,"is-typedarray":570}],572:[function(require,module,exports){
 arguments[4][208][0].apply(exports,arguments)
-},{"./_stream_readable":569,"./_stream_writable":571,"core-util-is":572,"dup":208,"inherits":573,"process-nextick-args":575}],569:[function(require,module,exports){
+},{"./_stream_readable":573,"./_stream_writable":575,"core-util-is":576,"dup":208,"inherits":577,"process-nextick-args":579}],573:[function(require,module,exports){
 arguments[4][210][0].apply(exports,arguments)
-},{"./_stream_duplex":568,"_process":206,"buffer":4,"core-util-is":572,"dup":210,"events":201,"inherits":573,"isarray":574,"process-nextick-args":575,"string_decoder/":576,"util":3}],570:[function(require,module,exports){
+},{"./_stream_duplex":572,"_process":206,"buffer":4,"core-util-is":576,"dup":210,"events":201,"inherits":577,"isarray":578,"process-nextick-args":579,"string_decoder/":580,"util":3}],574:[function(require,module,exports){
 arguments[4][211][0].apply(exports,arguments)
-},{"./_stream_duplex":568,"core-util-is":572,"dup":211,"inherits":573}],571:[function(require,module,exports){
+},{"./_stream_duplex":572,"core-util-is":576,"dup":211,"inherits":577}],575:[function(require,module,exports){
 arguments[4][212][0].apply(exports,arguments)
-},{"./_stream_duplex":568,"buffer":4,"core-util-is":572,"dup":212,"events":201,"inherits":573,"process-nextick-args":575,"util-deprecate":577}],572:[function(require,module,exports){
+},{"./_stream_duplex":572,"buffer":4,"core-util-is":576,"dup":212,"events":201,"inherits":577,"process-nextick-args":579,"util-deprecate":581}],576:[function(require,module,exports){
 arguments[4][231][0].apply(exports,arguments)
-},{"../../../../../../../../browserify/node_modules/insert-module-globals/node_modules/is-buffer/index.js":203,"dup":231}],573:[function(require,module,exports){
+},{"../../../../../../../../browserify/node_modules/insert-module-globals/node_modules/is-buffer/index.js":203,"dup":231}],577:[function(require,module,exports){
 arguments[4][202][0].apply(exports,arguments)
-},{"dup":202}],574:[function(require,module,exports){
+},{"dup":202}],578:[function(require,module,exports){
 arguments[4][204][0].apply(exports,arguments)
-},{"dup":204}],575:[function(require,module,exports){
+},{"dup":204}],579:[function(require,module,exports){
 arguments[4][214][0].apply(exports,arguments)
-},{"_process":206,"dup":214}],576:[function(require,module,exports){
+},{"_process":206,"dup":214}],580:[function(require,module,exports){
 arguments[4][221][0].apply(exports,arguments)
-},{"buffer":4,"dup":221}],577:[function(require,module,exports){
+},{"buffer":4,"dup":221}],581:[function(require,module,exports){
 arguments[4][215][0].apply(exports,arguments)
-},{"dup":215}],578:[function(require,module,exports){
+},{"dup":215}],582:[function(require,module,exports){
 arguments[4][218][0].apply(exports,arguments)
-},{"./lib/_stream_transform.js":570,"dup":218}],579:[function(require,module,exports){
+},{"./lib/_stream_transform.js":574,"dup":218}],583:[function(require,module,exports){
 arguments[4][236][0].apply(exports,arguments)
-},{"dup":236}],580:[function(require,module,exports){
+},{"dup":236}],584:[function(require,module,exports){
 arguments[4][237][0].apply(exports,arguments)
-},{"_process":206,"dup":237,"readable-stream/transform":578,"util":223,"xtend":579}],581:[function(require,module,exports){
-arguments[4][357][0].apply(exports,arguments)
-},{"dup":357,"end-of-stream":582,"fs":2,"once":584}],582:[function(require,module,exports){
-arguments[4][358][0].apply(exports,arguments)
-},{"dup":358,"once":584}],583:[function(require,module,exports){
-arguments[4][287][0].apply(exports,arguments)
-},{"dup":287}],584:[function(require,module,exports){
-arguments[4][288][0].apply(exports,arguments)
-},{"dup":288,"wrappy":583}]},{},[1]);
+},{"_process":206,"dup":237,"readable-stream/transform":582,"util":223,"xtend":583}]},{},[1]);
