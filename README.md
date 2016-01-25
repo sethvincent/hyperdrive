@@ -77,7 +77,7 @@ archive.entry(0, function (err, entry) { // get the first entry
 
 ## API
 
-#### `var drive = hyperdrive(db, [folder])`
+#### `var drive = hyperdrive(db)`
 
 Create a new hyperdrive instance. db should be a [levelup](https://github.com/level/levelup) instance.
 You can add a folder to store the file data in as the second argument.

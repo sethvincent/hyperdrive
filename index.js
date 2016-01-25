@@ -1,5 +1,6 @@
 var constants = require('constants')
 var hypercore = require('hypercore')
+var sublevel = require('subleveldown')
 var fs = require('fs')
 var bulk = require('bulk-write-stream')
 var rabin = require('rabin')
@@ -21,10 +22,14 @@ module.exports = Hyperdrive
 
 function Hyperdrive (db) {
   if (!(this instanceof Hyperdrive)) return new Hyperdrive(db)
+  var self = this
 
   this.db = db
+  this.drives = sublevel(db, 'drives', {valueEncoding: 'binary'})
   this.core = hypercore(db, {
-    storage: storage
+    storage: function (feed) {
+      return storage(self, feed)
+    }
   })
 }
 
@@ -125,7 +130,7 @@ Archive.prototype._getFeed = function (entry) {
   var self = this
   var contentBlocks = entry.link.blocks - entry.link.index.length
   var feed = this.core.get(entry.link.id, {
-    filename: path.join(this.directory, entry.name),
+    filename: join(this.directory, entry.name),
     index: deltas.unpack(entry.link.index),
     contentBlocks: contentBlocks
   })
@@ -191,7 +196,7 @@ Archive.prototype.append = function (entry, opts, cb) {
   if (opts.filename === true) opts.filename = entry.name
 
   var size = 0
-  var feed = this.core.add({filename: opts.filename && path.join(this.directory, opts.filename)})
+  var feed = this.core.add({filename: opts.filename && join(this.directory, opts.filename)})
   var stream = pumpify(rabin(), bulk(write, end))
 
   if (cb) {
@@ -249,7 +254,7 @@ Archive.prototype.appendFile = function (filename, name, cb) {
       size: 0
     }, {filename: filename}, cb)
 
-    if (ws) pump(fs.createReadStream(path.join(self.directory, filename)), ws)
+    if (ws) pump(fs.createReadStream(join(self.directory, filename)), ws)
   })
 }
 
@@ -265,4 +270,8 @@ function modeToType (mode) { // from tar-stream
   }
 
   return 'file'
+}
+
+function join (a, b) {
+  return path.join(a, path.resolve('/', b))
 }
