@@ -1,3 +1,4 @@
+var constants = require('constants')
 var hypercore = require('hypercore')
 var fs = require('fs')
 var bulk = require('bulk-write-stream')
@@ -6,8 +7,13 @@ var path = require('path')
 var deltas = require('delta-list')
 var from = require('from2')
 var pump = require('pump')
+var pumpify = require('pumpify')
+var octal = require('octal')
 var storage = require('./lib/storage')
 var messages = require('./lib/messages')
+
+var DMODE = octal(755)
+var FMODE = octal(644)
 
 module.exports = Hyperdrive
 
@@ -60,13 +66,10 @@ Archive.prototype.ready = function (cb) {
 Archive.prototype.select = function (i, cb) {
   if (!cb) cb = noop
   var self = this
-  this.get(i, function (err, data) {
+  this.entry(i, function (err, entry) {
     if (err) return cb(err)
-    if (!data || !data.link) return cb(null)
-    var feed = self.core.get(data.link.id, {
-      filename: path.join(self.directory, data.name)
-    })
-    feed.open(cb)
+    if (!entry || !entry.link) return cb(null, null)
+    cb(null, self._getFeed(entry))
   })
 }
 
@@ -74,7 +77,7 @@ Archive.prototype.deselect = function (i, cb) {
   throw new Error('not yet implemented')
 }
 
-Archive.prototype.get = function (i, cb) {
+Archive.prototype.entry = function (i, cb) {
   this.feed.get(i, function (err, data) {
     if (err) return cb(err)
     if (!data) return cb(null, null)
@@ -102,15 +105,35 @@ Archive.prototype.createEntryStream = function (opts) {
 
   function read (size, cb) {
     if (limit-- === 0) return cb(null, null)
-    self.get(start++, cb)
+    self.entry(start++, cb)
   }
+}
+
+Archive.prototype._getFeed = function (entry) {
+  if (!entry.link) return null
+
+  var contentBlocks = entry.link.blocks - entry.link.index.length
+  var feed = this.core.get(entry.link.id, {
+    filename: path.join(this.directory, entry.name),
+    index: deltas.unpack(entry.link.index),
+    contentBlocks: contentBlocks
+  })
+
+  feed.open(function (err) {
+    if (err) return
+    for (var i = 0; i < entry.link.index.length; i++) {
+      if (!feed.has(i + contentBlocks)) feed.want.push({block: i + contentBlocks, callback: noop, critical: true})
+    }
+  })
+
+  return feed
 }
 
 Archive.prototype.createFileCursor = function (i, opts) {
   throw new Error('not yet implemented')
 }
 
-Archive.prototype.createFileReadStream = function (i, opts) { // TODO: expose random access stuff
+Archive.prototype.createFileStream = function (i, opts) { // TODO: expose random access stuff
   if (!opts) opts = {}
   var start = opts.start || 0
   var limit = opts.limit || Infinity
@@ -125,54 +148,46 @@ Archive.prototype.createFileReadStream = function (i, opts) { // TODO: expose ra
       return
     }
 
-    self.get(i, function (err, entry) {
+    self.entry(i, function (err, entry) {
       if (err) return cb(err)
       if (!entry.link) return cb(null, null)
-      feed = self.core.get(entry.link.id)
+      feed = self._getFeed(entry)
       limit = Math.min(limit, entry.link.blocks - entry.link.index.length)
       read(0, cb)
     })
   }
 }
 
-Archive.prototype.createFileWriteStream = function (entry) {
-  throw new Error('not yet implemented')
-}
-
-Archive.prototype.append = function (entry, cb) {
-  throw new Error('not yet implemented')
-}
-
-Archive.prototype.appendFile = function (filename, cb) {
-  if (!cb) cb = noop
+Archive.prototype.append = function (entry, opts, cb) {
+  if (typeof opts === 'function') return this.append(entry, null, opts)
+  if (typeof entry === 'string') entry = {name: entry, type: 'file'}
+  if (!entry.name) throw new Error('entry.name is required')
+  if (!entry.type && entry.mode) entry.type = modeToType(entry.mode)
+  if (entry.type && !entry.mode) entry.mode = entry.type === 'directory' ? DMODE : FMODE
+  if (!opts) opts = {}
 
   var self = this
-  var feed = this.core.add({filename: path.join(this.directory, filename)})
 
-  pump(
-    fs.createReadStream(filename),
-    rabin(),
-    bulk(write, end),
-    cb
-  )
-
-  return feed
-
-  function write (buffers, cb) {
-    feed.append(buffers, cb)
+  if (entry.type !== 'file') {
+    append(null, cb)
+    return null
   }
 
-  function end (cb) {
-    feed.finalize(function () {
-      self.feed.append(messages.Entry.encode({
-        name: filename,
-        link: {
-          id: feed.id,
-          blocks: feed.blocks,
-          index: deltas.pack(feed._storage._index)
-        }
-      }), done)
-    })
+  if (opts.filename === true) opts.filename = entry.name
+
+  var feed = this.core.add({filename: opts.filename && path.join(this.directory, opts.filename)})
+  var stream = pumpify(rabin(), bulk(write, end))
+
+  if (cb) {
+    stream.on('error', cb)
+    stream.on('finish', cb)
+  }
+
+  return stream
+
+  function append (link, cb) {
+    entry.link = link
+    self.feed.append(messages.Entry.encode(entry), done)
 
     function done (err) {
       if (err) return cb(err)
@@ -180,21 +195,53 @@ Archive.prototype.appendFile = function (filename, cb) {
       cb(null)
     }
   }
+
+  function write (buffers, cb) {
+    feed.append(buffers, cb)
+  }
+
+  function end (cb) {
+    feed.finalize(function (err) {
+      if (err) return cb(err)
+
+      var link = {
+        id: feed.id,
+        blocks: feed.blocks,
+        index: deltas.pack(feed._storage._index)
+      }
+
+      append(link, cb)
+    })
+  }
+}
+
+Archive.prototype.appendFile = function (filename, cb) {
+  if (!cb) cb = noop
+
+  var self = this
+
+  fs.lstat(filename, function (err, st) {
+    if (err) return cb(err)
+
+    var ws = self.append({
+      name: filename,
+      mode: st.mode
+    }, {filename: filename}, cb)
+
+    if (ws) pump(fs.createReadStream(path.join(self.directory, filename)), ws)
+  })
 }
 
 function noop () {}
 
-var drive = Hyperdrive(require('memdb')())
+function modeToType (mode) { // from tar-stream
+  switch (mode & constants.S_IFMT) {
+    case constants.S_IFBLK: return 'block-device'
+    case constants.S_IFCHR: return 'character-device'
+    case constants.S_IFDIR: return 'directory'
+    case constants.S_IFIFO: return 'fifo'
+    case constants.S_IFLNK: return 'symlink'
+  }
 
-var archive = drive.add('.')
-
-archive.appendFile('index.js', function (err) {
-  if (err) throw err
-  console.log(archive.entries)
-  // archive.get(0, console.log)
-  // archive.createEntryStream().on('data', console.log)
-  archive.select(0)
-  archive.get(0, console.log)
-  archive.createFileReadStream(0).on('data', console.log)
-})
-
+  return 'file'
+}
