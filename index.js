@@ -9,6 +9,8 @@ var from = require('from2')
 var pump = require('pump')
 var pumpify = require('pumpify')
 var octal = require('octal')
+var util = require('util')
+var events = require('events')
 var storage = require('./lib/storage')
 var messages = require('./lib/messages')
 
@@ -39,6 +41,8 @@ Hyperdrive.prototype.add = function (folder) {
 }
 
 function Archive (drive, folder, id) {
+  events.EventEmitter.call(this)
+
   var self = this
 
   this.id = id
@@ -52,12 +56,18 @@ function Archive (drive, folder, id) {
     this.feed = this.core.get(id)
   }
 
-  this.feed.once('update', onupdate)
+  this.feed.on('put', function (block, data) {
+    self.emit('download', data, block)
+  })
 
-  function onupdate () {
+  this.feed.ready(function (err) {
+    if (err) return
     self.entries = self.feed.blocks
-  }
+    self.emit('ready')
+  })
 }
+
+util.inherits(Archive, events.EventEmitter)
 
 Archive.prototype.ready = function (cb) {
   this.feed.ready(cb)
@@ -112,11 +122,16 @@ Archive.prototype.createEntryStream = function (opts) {
 Archive.prototype._getFeed = function (entry) {
   if (!entry.link) return null
 
+  var self = this
   var contentBlocks = entry.link.blocks - entry.link.index.length
   var feed = this.core.get(entry.link.id, {
     filename: path.join(this.directory, entry.name),
     index: deltas.unpack(entry.link.index),
     contentBlocks: contentBlocks
+  })
+
+  feed.on('put', function (block, data) {
+    self.emit('file-download', entry, data, block)
   })
 
   feed.open(function (err) {
@@ -175,6 +190,7 @@ Archive.prototype.append = function (entry, opts, cb) {
 
   if (opts.filename === true) opts.filename = entry.name
 
+  var size = 0
   var feed = this.core.add({filename: opts.filename && path.join(this.directory, opts.filename)})
   var stream = pumpify(rabin(), bulk(write, end))
 
@@ -186,6 +202,7 @@ Archive.prototype.append = function (entry, opts, cb) {
   return stream
 
   function append (link, cb) {
+    entry.size = size
     entry.link = link
     self.feed.append(messages.Entry.encode(entry), done)
 
@@ -197,6 +214,7 @@ Archive.prototype.append = function (entry, opts, cb) {
   }
 
   function write (buffers, cb) {
+    for (var i = 0; i < buffers.length; i++) size += buffers[i].length
     feed.append(buffers, cb)
   }
 
@@ -215,8 +233,10 @@ Archive.prototype.append = function (entry, opts, cb) {
   }
 }
 
-Archive.prototype.appendFile = function (filename, cb) {
+Archive.prototype.appendFile = function (filename, name, cb) {
+  if (typeof name === 'function') return this.appendFile(filename, null, name)
   if (!cb) cb = noop
+  if (!name) name = filename
 
   var self = this
 
@@ -224,8 +244,9 @@ Archive.prototype.appendFile = function (filename, cb) {
     if (err) return cb(err)
 
     var ws = self.append({
-      name: filename,
-      mode: st.mode
+      name: name,
+      mode: st.mode,
+      size: 0
     }, {filename: filename}, cb)
 
     if (ws) pump(fs.createReadStream(path.join(self.directory, filename)), ws)
