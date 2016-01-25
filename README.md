@@ -18,7 +18,7 @@ First create a new feed to share
 var hyperdrive = require('hyperdrive')
 var level = require('level')
 
-var db = levelup('./hyperdrive.db')
+var db = level('./hyperdrive.db')
 var drive = hyperdrive(db)
 
 var pack = drive.add('./some-folder')
