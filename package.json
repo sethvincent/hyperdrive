@@ -16,11 +16,14 @@
     "delta-list": "^1.0.0",
     "from2": "^2.1.0",
     "hypercore": "mafintosh/hypercore",
+    "last-one-wins": "^1.0.3",
     "mkdirp": "^0.5.1",
     "protocol-buffers": "^3.1.4",
     "pump": "^1.0.1",
     "pumpify": "^1.3.3",
-    "rabin": "^1.4.0"
+    "rabin": "^1.4.0",
+    "random-access-open": "^1.1.0",
+    "thunky": "^0.1.0"
   },
   "devDependencies": {
     "memdb": "^1.3.1",
