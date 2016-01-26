@@ -33,15 +33,21 @@ function Hyperdrive (db) {
   })
 }
 
+// Hyperdrive.prototype.list = function () {
+//   return this.drives.createKeyStream()
+// }
+
 Hyperdrive.prototype.createPeerStream = function () {
   return this.core.createPeerStream()
 }
 
 Hyperdrive.prototype.get = function (id, folder) {
+  if (!folder || !id) throw new Error('id and folder required')
   return new Archive(this, folder, id)
 }
 
 Hyperdrive.prototype.add = function (folder) {
+  if (!folder) throw new Error('folder required')
   return new Archive(this, folder, null)
 }
 
@@ -80,12 +86,17 @@ Archive.prototype.ready = function (cb) {
 
 Archive.prototype.select = function (i, cb) {
   if (!cb) cb = noop
+
   var self = this
-  this.entry(i, function (err, entry) {
+
+  if (typeof i === 'number') this.entry(i, onentry)
+  else onentry(null, i)
+
+  function onentry (err, entry) {
     if (err) return cb(err)
     if (!entry || !entry.link) return cb(null, null)
     cb(null, self._getFeed(entry))
-  })
+  }
 }
 
 Archive.prototype.deselect = function (i, cb) {
@@ -168,13 +179,16 @@ Archive.prototype.createFileStream = function (i, opts) { // TODO: expose random
       return
     }
 
-    self.entry(i, function (err, entry) {
+    if (typeof i === 'number') self.entry(i, onentry)
+    else onentry(null, i)
+
+    function onentry (err, entry) {
       if (err) return cb(err)
       if (!entry.link) return cb(null, null)
       feed = self._getFeed(entry)
       limit = Math.min(limit, entry.link.blocks - entry.link.index.length)
       read(0, cb)
-    })
+    }
   }
 }
 
@@ -196,15 +210,19 @@ Archive.prototype.append = function (entry, opts, cb) {
   if (opts.filename === true) opts.filename = entry.name
 
   var size = 0
-  var feed = this.core.add({filename: opts.filename && join(this.directory, opts.filename)})
+  var feed = this.core.add({filename: opts.filename && path.resolve(this.directory, opts.filename)})
   var stream = pumpify(rabin(), bulk(write, end))
 
   if (cb) {
     stream.on('error', cb)
-    stream.on('finish', cb)
+    stream.on('finish', forward)
   }
 
   return stream
+
+  function forward () {
+    cb(null, entry)
+  }
 
   function append (link, cb) {
     entry.size = size
@@ -226,6 +244,7 @@ Archive.prototype.append = function (entry, opts, cb) {
   function end (cb) {
     feed.finalize(function (err) {
       if (err) return cb(err)
+      if (!feed.id) return append(null, cb)
 
       var link = {
         id: feed.id,
@@ -251,10 +270,11 @@ Archive.prototype.appendFile = function (filename, name, cb) {
     var ws = self.append({
       name: name,
       mode: st.mode,
-      size: 0
+      size: 0,
+      link: null
     }, {filename: filename}, cb)
 
-    if (ws) pump(fs.createReadStream(join(self.directory, filename)), ws)
+    if (ws) pump(fs.createReadStream(path.resolve(self.directory, filename)), ws)
   })
 }
 
